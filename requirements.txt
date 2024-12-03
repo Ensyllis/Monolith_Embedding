@@ -1,0 +1,6 @@
+torch>=2.0.0
+transformers>=4.30.0
+numpy>=1.24.0
+umap-learn>=0.5.3
+watchdog>=3.0.0
+scikit-learn>=1.2.0  # Required by UMAP
