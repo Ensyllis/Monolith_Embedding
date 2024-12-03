@@ -1,23 +1,20 @@
-FROM python:3.8-slim
-
-# Install system dependencies including Rust
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+FROM python:3.9-slim
 
 WORKDIR /app
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pipeline.py .
+# Copy application code
+COPY . .
 
-# Create data directories
-RUN mkdir -p data/input data/processed data/embedding_results
+# Create directories
+RUN mkdir -p data/input data/processed data/error data/embedding_results logs
 
 CMD ["python", "pipeline.py"]

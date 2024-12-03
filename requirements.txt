@@ -1,6 +1,10 @@
 torch>=2.0.0
 transformers>=4.30.0
-numpy>=1.24.0
+numpy>=1.21.0
+tqdm>=4.65.0
+pathlib>=1.0.1
+flask>=2.0.0
 umap-learn>=0.5.3
-watchdog>=3.0.0
-scikit-learn>=1.2.0  # Required by UMAP
+matplotlib>=3.4.0
+scikit-learn>=1.0.0  # UMAP dependency
+scipy>=1.7.0         # Another UMAP dependency

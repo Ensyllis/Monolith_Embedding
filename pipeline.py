@@ -2,301 +2,222 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 from pathlib import Path
 import numpy as np
-import umap.umap_ as umap
 import logging
 from logging.handlers import RotatingFileHandler
-import os
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 import json
 from datetime import datetime
 import shutil
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from tqdm import tqdm
 
-class MemoryManager:
-    def __init__(self, max_items: int = 1000, cleanup_threshold: float = 0.9):
-        self.max_items = max_items
-        self.cleanup_threshold = cleanup_threshold
-
-    def check_and_cleanup(self, results: Dict) -> Dict:
-        if len(results) > self.max_items * self.cleanup_threshold:
-            # Sort by timestamp and keep only the most recent max_items
-            sorted_items = sorted(
-                results.items(),
-                key=lambda x: x[1]['metadata']['processed_at'],
-                reverse=True
-            )
-            return dict(sorted_items[:self.max_items])
-        return results
-
-def setup_logging(log_dir: str = "logs", max_bytes: int = 10485760, backup_count: int = 5) -> logging.Logger:
-    """Set up logging with rotation and separate files for different log levels."""
+def setup_logging(log_dir: str = "logs") -> logging.Logger:
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create logger
+    
     logger = logging.getLogger("StylometryPipeline")
     logger.setLevel(logging.DEBUG)
-
-    # Create formatters
-    detailed_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
-    )
-    simple_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-    # Create handlers for different log levels
-    handlers = {
-        'debug': RotatingFileHandler(
-            log_dir / 'debug.log', maxBytes=max_bytes, backupCount=backup_count
-        ),
-        'info': RotatingFileHandler(
-            log_dir / 'info.log', maxBytes=max_bytes, backupCount=backup_count
-        ),
-        'error': RotatingFileHandler(
-            log_dir / 'error.log', maxBytes=max_bytes, backupCount=backup_count
-        )
-    }
-
-    # Set levels and formatters
-    handlers['debug'].setLevel(logging.DEBUG)
-    handlers['debug'].setFormatter(detailed_formatter)
-    handlers['info'].setLevel(logging.INFO)
-    handlers['info'].setFormatter(simple_formatter)
-    handlers['error'].setLevel(logging.ERROR)
-    handlers['error'].setFormatter(detailed_formatter)
-
-    # Add handlers to logger
-    for handler in handlers.values():
-        logger.addHandler(handler)
-
-    # Add console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(simple_formatter)
-    logger.addHandler(console_handler)
-
+    
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # File handler
+    fh = RotatingFileHandler(log_dir / 'pipeline.log', maxBytes=10*1024*1024, backupCount=5)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    
     return logger
 
-class StylometryPipeline:
-    def __init__(
-            self, 
-            input_dir: str = "data/input", 
-            processed_dir: str = "data/processed", 
-            results_dir: str = "data/embedding_results", 
-            max_memory_items: int = 100
-        ):
+def chunk_text(text: str, tokenizer, chunk_size: int = 512) -> list:
+    """Split text into chunks based on token count, handling long sequences safely."""
+    chunks = []
+    rough_chunks = [p for p in text.split('. ') if p.strip()]
+    
+    current_chunk = []
+    current_length = 0
+    
+    for rough_chunk in tqdm(rough_chunks, desc="Processing text chunks", leave=False):
+        try:
+            tokens = tokenizer.encode(rough_chunk + '.', add_special_tokens=False)
+        except Exception as e:
+            logger.warning(f"Error tokenizing chunk, splitting further: {str(e)}")
+            words = rough_chunk.split()
+            tokens = []
+            current_piece = []
+            
+            for word in words:
+                current_piece.append(word)
+                if len(' '.join(current_piece)) > 200: 
+                    try:
+                        piece_tokens = tokenizer.encode(' '.join(current_piece) + '.', add_special_tokens=False)
+                        tokens.extend(piece_tokens)
+                        current_piece = []
+                    except Exception as e:
+                        logger.error(f"Could not tokenize piece: {str(e)}")
+                        current_piece = []
+                        continue
+            
+            if current_piece:
+                try:
+                    piece_tokens = tokenizer.encode(' '.join(current_piece) + '.', add_special_tokens=False)
+                    tokens.extend(piece_tokens)
+                except Exception as e:
+                    logger.error(f"Could not tokenize final piece: {str(e)}")
+        
+        if current_length + len(tokens) > chunk_size and current_chunk:
+            chunk_text = tokenizer.decode(current_chunk)
+            if chunk_text.strip():
+                chunks.append(chunk_text.strip())
+            current_chunk = []
+            current_length = 0
+        
+        if len(tokens) > chunk_size:
+            for i in range(0, len(tokens), chunk_size):
+                sub_tokens = tokens[i:i + chunk_size]
+                sub_text = tokenizer.decode(sub_tokens)
+                if sub_text.strip():
+                    chunks.append(sub_text.strip())
+        else:
+            current_chunk.extend(tokens)
+            current_length += len(tokens)
+        
+        if current_length >= chunk_size:
+            chunk_text = tokenizer.decode(current_chunk)
+            if chunk_text.strip():
+                chunks.append(chunk_text.strip())
+            current_chunk = []
+            current_length = 0
+    
+    if current_chunk:
+        chunk_text = tokenizer.decode(current_chunk)
+        if chunk_text.strip():
+            chunks.append(chunk_text.strip())
+    
+    return chunks
 
-        # Set up logging
+class StylometryPipeline:
+    def __init__(self, input_dir: str = "data/input", 
+                 processed_dir: str = "data/processed",
+                 error_dir: str = "data/error",
+                 results_dir: str = "data/embedding_results"):
         self.logger = setup_logging()
         
-        # Validate directories and permissions
-        self.validate_directories(input_dir, processed_dir, results_dir)
+        # Set up directories
+        self.input_dir = Path(input_dir)
+        self.processed_dir = Path(processed_dir)
+        self.error_dir = Path(error_dir)
+        self.results_dir = Path(results_dir)
         
-        # Set up memory management
-        self.memory_manager = MemoryManager(max_items=max_memory_items)
+        for dir_path in [self.input_dir, self.processed_dir, self.error_dir, self.results_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize ML components
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.logger.info(f"Using device: {self.device}")
-
+        
         self.logger.info("Loading NLP models...")
+        self.tokenizer = AutoTokenizer.from_pretrained('roberta-large')
+        self.model = AutoModel.from_pretrained('AIDA-UPM/star').to(self.device)
+        self.model.eval()
+
+    def process_chunk(self, chunk: str) -> np.ndarray:
+        """Process a single chunk of text and return its embedding."""
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained('roberta-large')
-            self.model = AutoModel.from_pretrained('AIDA-UPM/star').to(self.device)
-            self.model.eval()
+            inputs = self.tokenizer(
+                chunk,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            ).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                embedding = outputs.pooler_output.cpu().numpy()
+
+            return embedding[0]
         except Exception as e:
-            self.logger.error(f"Failed to load models: {str(e)}")
+            self.logger.error(f"Error processing chunk: {str(e)}")
             raise
 
-        self.umap_reducer = umap.UMAP(
-            n_neighbors=15,
-            n_components=2,
-            min_dist=0.1,
-            metric='euclidean',
-            random_state=42
-        )
-
-        # Store results in memory and load any existing results
-        self.results = self.load_results()
-
-    def validate_directories(
-            self, 
-            input_dir: str, 
-            processed_dir: str, 
-            results_dir: str
-        ):
-        """Validate and create directories with proper permissions."""
-        try:
-            for dir_path in [input_dir, processed_dir, results_dir]:
-                path = Path(dir_path)
-                path.mkdir(parents=True, exist_ok=True)
-                
-                # Test write permissions
-                test_file = path / '.permission_test'
-                try:
-                    test_file.touch()
-                    test_file.unlink()
-                except Exception as e:
-                    self.logger.error(f"No write permission in {dir_path}: {str(e)}")
-                    raise PermissionError(f"No write permission in {dir_path}")
-                
-            self.input_dir = Path(input_dir)
-            self.processed_dir = Path(processed_dir)
-            self.results_dir = Path(results_dir)
-            
-            self.logger.info("Directory validation successful")
-        except Exception as e:
-            self.logger.error(f"Directory validation failed: {str(e)}")
-            raise
-
-    def cleanup_old_results(
-            self, 
-            max_files: int = 10
-        ):
-        """Clean up old result files keeping only the most recent ones."""
-        result_files = list(self.results_dir.glob('embeddings_*.json'))
-        if len(result_files) > max_files:
-            sorted_files = sorted(result_files, key=lambda x: x.stat().st_mtime)
-            for file in sorted_files[:-max_files]:
-                try:
-                    file.unlink()
-                    self.logger.info(f"Cleaned up old result file: {file}")
-                except Exception as e:
-                    self.logger.error(f"Failed to delete old result file {file}: {str(e)}")
-
-    def save_results(self):
-        """Save results to JSON file with cleanup."""
-        try:
-            # Clean up old result files
-            self.cleanup_old_results()
-            
-            # Convert numpy arrays to lists for JSON serialization
-            serializable_results = {}
-            for job_id, data in self.results.items():
-                serializable_results[job_id] = {
-                    'text': data['text'],
-                    'embedding': data['embedding'].tolist(),
-                    'metadata': data['metadata'],
-                    'coordinates': data.get('coordinates', None)
-                }
-
-            # Save to a timestamped JSON file
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            result_file = self.results_dir / f'embeddings_{timestamp}.json'
-            
-            with open(result_file, 'w') as f:
-                json.dump(serializable_results, f, indent=2)
-            
-            self.logger.info(f"Results saved to {result_file}")
-        except Exception as e:
-            self.logger.error(f"Failed to save results: {str(e)}")
-            raise
-
-    def process_file(
-            self, 
-            filepath: Path
-        ) -> Tuple[str, np.ndarray]:
-        """Process a single text file with enhanced error handling."""
+    def process_file(self, filepath: Path) -> Tuple[str, np.ndarray]:
+        """Process a single text file with chunking."""
         self.logger.info(f"Processing file: {filepath}")
         
         try:
-            # Check file size before processing
-            file_size = filepath.stat().st_size
-            if file_size > 10 * 1024 * 1024:  # 10MB limit
-                raise ValueError(f"File too large: {file_size / (1024*1024):.2f}MB")
-
+            # Read file
             with open(filepath, 'r', encoding='utf-8') as f:
                 text = f.read()
 
-            embedding = self.process_text(text)
-            job_id = f"job_{filepath.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            # Chunk text
+            chunks = chunk_text(text, self.tokenizer)
+            self.logger.info(f"Split into {len(chunks)} chunks")
 
-            self.results[job_id] = {
-                'text': text,
-                'embedding': embedding,
-                'metadata': {
-                    'filename': filepath.name,
-                    'processed_at': datetime.now().isoformat(),
-                    'file_size': file_size
+            # Process each chunk
+            chunk_embeddings = []
+            for chunk in tqdm(chunks, desc="Processing chunks"):
+                embedding = self.process_chunk(chunk)
+                chunk_embeddings.append(embedding)
+
+            # Average embeddings
+            if not chunk_embeddings:
+                raise ValueError("No valid chunks processed")
+                
+            final_embedding = np.mean(chunk_embeddings, axis=0)
+            
+            # Create job ID and metadata
+            job_id = f"job_{filepath.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Save results
+            result = {
+                job_id: {
+                    'text': text,  # original text
+                    'embedding': final_embedding.tolist(),
+                    'metadata': {
+                        'filename': filepath.name,
+                        'processed_at': datetime.now().isoformat(),
+                        'num_chunks': len(chunks),
+                        'file_size': filepath.stat().st_size
+                    }
                 }
             }
-
-            # Memory management
-            self.results = self.memory_manager.check_and_cleanup(self.results)
-
-            # Save results and move file
-            self.save_results()
+            
+            # Save to JSON
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            result_file = self.results_dir / f'embedding_{filepath.stem}_{timestamp}.json'
+            
+            with open(result_file, 'w') as f:
+                json.dump(result, f, indent=2)
+            
+            # Move processed file
             dest_path = self.processed_dir / filepath.name
             shutil.move(str(filepath), str(dest_path))
-            self.logger.info(f"Successfully processed and moved file: {filepath}")
-
-            return job_id, embedding
+            
+            self.logger.info(f"Successfully processed {filepath}")
+            return job_id, final_embedding
 
         except Exception as e:
             self.logger.error(f"Error processing file {filepath}: {str(e)}")
-            # Move failed files to an error directory
-            error_dir = self.input_dir / "error"
-            error_dir.mkdir(exist_ok=True)
-            try:
-                shutil.move(str(filepath), str(error_dir / filepath.name))
-                self.logger.info(f"Moved failed file to error directory: {filepath}")
-            except Exception as move_error:
-                self.logger.error(f"Failed to move error file: {str(move_error)}")
+            error_path = self.error_dir / filepath.name
+            shutil.move(str(filepath), str(error_path))
             raise
 
-class TextFileHandler(FileSystemEventHandler):
-    def __init__(self, pipeline: StylometryPipeline):
-        self.pipeline = pipeline
-        self.logger = logging.getLogger("StylometryPipeline.FileHandler")
-
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        
-        filepath = Path(event.src_path)
-        if filepath.suffix.lower() == '.txt':
-            try:
-                job_id, _ = self.pipeline.process_file(filepath)
-                self.logger.info(f"Processed new file. Job ID: {job_id}")
-                self.pipeline.analyze_embeddings()
-            except Exception as e:
-                self.logger.error(f"Error handling new file: {str(e)}")
-
 def main():
-    try:
-        pipeline = StylometryPipeline()
-        pipeline.logger.info("Pipeline initialized")
-
-        # Process existing files
-        for filepath in pipeline.input_dir.glob("*.txt"):
-            try:
-                pipeline.process_file(filepath)
-            except Exception as e:
-                pipeline.logger.error(f"Error processing existing file {filepath}: {str(e)}")
-
-        # Analyze initial embeddings
-        if pipeline.results:
-            pipeline.analyze_embeddings()
-
-        # Watch for new files
-        handler = TextFileHandler(pipeline)
-        observer = Observer()
-        observer.schedule(handler, str(pipeline.input_dir), recursive=False)
-        observer.start()
-        pipeline.logger.info(f"Watching for new files in {pipeline.input_dir}")
-
-        while True:
-            import time
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-        pipeline.logger.info("Stopping file observer")
-    except Exception as e:
-        pipeline.logger.error(f"Critical error in main loop: {str(e)}")
-        raise
-    finally:
-        observer.join()
-        pipeline.logger.info("Pipeline shutdown complete")
+    pipeline = StylometryPipeline()
+    
+    # Process all txt files in input directory
+    for filepath in pipeline.input_dir.glob("*.txt"):
+        try:
+            pipeline.process_file(filepath)
+        except Exception as e:
+            pipeline.logger.error(f"Failed to process {filepath}: {str(e)}")
+            continue
 
 if __name__ == "__main__":
     main()
