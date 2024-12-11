@@ -30,7 +30,7 @@ def setup_logging(log_dir: str = "logs") -> logging.Logger:
     ch.setFormatter(formatter)
     
     logger.addHandler(fh)
-    logger.addHandler(ch)
+    logger.addHandler(ch) 
     
     return logger
 

@@ -27,3 +27,5 @@
 2024-12-03 22:23:38,294 - INFO - Processing file: data/input/sermonic_3.txt
 2024-12-03 22:23:38,335 - INFO - Split into 6 chunks
 2024-12-03 22:23:49,440 - INFO - Successfully processed data/input/sermonic_3.txt
+2024-12-03 23:36:46,635 - INFO - Using device: cpu
+2024-12-03 23:36:46,638 - INFO - Loading NLP models...
