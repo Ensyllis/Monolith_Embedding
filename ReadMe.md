@@ -1,4 +1,71 @@
 # Writing Style Analysis System: From Text to Embeddings
+
+## Deploying the code
+
+### Setting Up Your Environment
+
+First, we need to create a home for our project. Open your terminal and run:
+
+```bash
+# Get the code from GitHub 
+git clone https://github.com/Ensyllis/Monolith_Embedding.git 
+cd Monolith_Embedding
+```
+
+### Data Input:
+
+Put all of your .text files inside of the data/input folder
+
+### Docker Deployment:
+
+The system uses Docker to manage dependencies and ensure consistent execution across environments. Deploy using:
+```bash
+docker-compose build
+docker-compose up -d
+
+# Monitor system execution
+docker-compose logs -f
+```
+
+This will automatically start running the system for embedding process in the data/input folder.
+### System Monitoring:
+
+Track proccessing status and usage through the logging system
+
+```bash
+# View processing logs
+tail -f data/logs/pipeline.log
+
+# Check processed files and results
+ls -l data/processed/
+ls -l data/embedding_results/
+```
+### Analysis Pipeline
+
+To analyze writing styles, place text files in the input directory and initiate processing:
+
+```bash
+# Initiate the analysis pipeline 
+curl -X POST http://localhost:5000/generate_umap
+```
+
+This will call the API backend which will initiate the analysis section of the code. 
+
+### Error Handling
+
+The system implements a robust error handling mechanism. Failed files are automatically moved to the error directory for investigation and reprocessing:
+
+```bash
+# Review failed files
+ls -l data/error/
+
+# Reprocess failed files
+mv data/error/* data/input/
+```
+
+---
+---
+---
 ## High-Level Overview
 
 This system transforms written text into mathematical representations (embeddings) that capture writing style. These embeddings allow us to:
@@ -69,7 +136,7 @@ Each chunk maintains semantic coherence while fitting within model constraints.
 
 ### Step 3: Embedding Generation
 
-Each chunk becomes a 1024-dimensional vector:
+Each chunk becomes a 768-dimensional vector:
 
 ```python
 def process_chunk(self, chunk: str) -> np.ndarray:
@@ -78,7 +145,7 @@ def process_chunk(self, chunk: str) -> np.ndarray:
     return outputs.pooler_output.cpu().numpy()
 ```
 
-Chunk → Tokens → Model → 1024D Vector:
+Chunk → Tokens → Model → 768D Vector:
 ```python
 [0.13589645, 0.02458921, ..., 0.05678901]
 ```
@@ -279,162 +346,3 @@ data/
 4. Missing genre/context in interpretation
 
 Remember: The visualization is a tool for exploration, not a definitive style categorization. Use it to identify patterns and generate hypotheses about writing style relationships.
-
-## High-Level Overview
-
-This system transforms written text into mathematical representations (embeddings) that capture writing style. These embeddings allow us to:
-- Compare writing styles numerically
-- Group similar writing styles
-- Detect stylistic outliers
-- Attribute potential authorship
-
-### Core Concept Example
-
-Consider these messages from different authors:
-
-```
-Author 1: "Hello there! How are you doing today?"
-Author 2: "sup bro"
-Author 3: "Greetings, I trust this message finds you well."
-```
-
-These differences in formality, punctuation, and word choice create distinct "fingerprints" that our system captures mathematically.
-
-## System Architecture
-
-1. **Input Processing**: Text files → Chunks
-2. **Embedding Generation**: Chunks → Numerical Vectors
-3. **Result Storage**: Vectors → Structured JSON
-4. **Error Handling**: Automated recovery and logging
-
-## Technical Deep Dive
-
-Let's follow a sample academic text through the system:
-
-```text
-The scribe's particular choice of vocabulary indicates a formal education in ecclesiastical matters. 
-The intersection of paleographic evidence and textual analysis yields surprising correlations. 
-Upon careful examination of the extant manuscripts, several distinct patterns emerge...
-```
-
-### Step 1: Pipeline Initialization
-```python
-def __init__(self):
-    self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    self.model = AutoModel.from_pretrained('AIDA-UPM/star').to(self.device)
-    self.tokenizer = AutoTokenizer.from_pretrained('roberta-large')
-```
-
-The system loads:
-- AIDA-UPM/star model (fine-tuned RoBERTa)
-- GPU acceleration if available
-- RoBERTa tokenizer for text processing
-
-### Step 2: Text Chunking
-
-Input text gets split into 512-token chunks (model's maximum input size):
-
-```python
-chunks = chunk_text(text, self.tokenizer)
-```
-
-Example chunks:
-```python
-[
-    "The scribe's particular choice of vocabulary indicates... correlations.",
-    "Upon careful examination of the extant manuscripts... patterns emerge."
-]
-```
-
-Each chunk maintains semantic coherence while fitting within model constraints.
-
-### Step 3: Embedding Generation
-
-Each chunk becomes a 1024-dimensional vector:
-
-```python
-def process_chunk(self, chunk: str) -> np.ndarray:
-    inputs = self.tokenizer(chunk, padding=True, truncation=True)
-    outputs = self.model(**inputs)
-    return outputs.pooler_output.cpu().numpy()
-```
-
-Chunk → Tokens → Model → 1024D Vector:
-```python
-[0.13589645, 0.02458921, ..., 0.05678901]
-```
-
-### Step 4: Result Storage
-
-Results get saved in a structured hierarchy:
-
-```
-results_dir/
-├── job_academic_20241221_102030/
-│   └── chunks/
-│       ├── chunk_0.json  # Individual chunk data
-│       └── chunk_1.json
-└── embedding_academic_20241221_102030.json  # Final averaged embedding
-```
-
-Each chunk file contains:
-```json
-{
-    "chunk_text": "Original text segment",
-    "embedding": [vector values],
-    "chunk_index": 0
-}
-```
-
-Final embedding file contains:
-```json
-{
-    "job_academic_20241221_102030": {
-        "text": "Complete original text",
-        "embedding": [averaged vector],
-        "metadata": {
-            "filename": "academic.txt",
-            "processed_at": "2024-12-21T10:20:30",
-            "num_chunks": 2,
-            "file_size": 1024
-        }
-    }
-}
-```
-
-## System Limitations
-
-1. **Memory Constraints**
-   - Maximum 512 tokens per chunk
-   - GPU memory usage scales with batch size
-
-2. **Processing Limits**
-   - Processes one file at a time
-   - Large files require chunking overhead
-
-3. **Edge Cases**
-   - May split mid-sentence at chunk boundaries
-   - Very short texts might lose stylistic nuance
-
-## Usage
-
-1. Place .txt files in `data/input/`
-2. Run:
-   ```bash
-   docker-compose build up
-   ```
-3. Monitor `data/logs/` for progress
-4. Find results in `data/embedding_results/`
-5. Access analysis via:
-   ```
-   POST http://localhost:5000/generate_umap
-   ```
-
-## Error Recovery
-
-- Failed files move to `data/error/`
-- Successfully processed files move to `data/processed/`
-- System can resume interrupted processing
-- Detailed logs track all operations
-
-The system is designed to be robust, handling everything from Shakespeare to tweets with equal aplomb. Just feed it text, and it'll give you numbers that capture the essence of the writing style.
