@@ -69,7 +69,7 @@ Each chunk maintains semantic coherence while fitting within model constraints.
 
 ### Step 3: Embedding Generation
 
-Each chunk becomes a 768-dimensional vector:
+Each chunk becomes a 1024-dimensional vector:
 
 ```python
 def process_chunk(self, chunk: str) -> np.ndarray:
@@ -78,7 +78,7 @@ def process_chunk(self, chunk: str) -> np.ndarray:
     return outputs.pooler_output.cpu().numpy()
 ```
 
-Chunk → Tokens → Model → 768D Vector:
+Chunk → Tokens → Model → 1024D Vector:
 ```python
 [0.13589645, 0.02458921, ..., 0.05678901]
 ```
@@ -350,7 +350,7 @@ Each chunk maintains semantic coherence while fitting within model constraints.
 
 ### Step 3: Embedding Generation
 
-Each chunk becomes a 768-dimensional vector:
+Each chunk becomes a 1024-dimensional vector:
 
 ```python
 def process_chunk(self, chunk: str) -> np.ndarray:
@@ -359,7 +359,7 @@ def process_chunk(self, chunk: str) -> np.ndarray:
     return outputs.pooler_output.cpu().numpy()
 ```
 
-Chunk → Tokens → Model → 768D Vector:
+Chunk → Tokens → Model → 1024D Vector:
 ```python
 [0.13589645, 0.02458921, ..., 0.05678901]
 ```
