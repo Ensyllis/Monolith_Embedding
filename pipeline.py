@@ -30,7 +30,7 @@ def setup_logging(log_dir: str = "logs") -> logging.Logger:
     ch.setFormatter(formatter)
     
     logger.addHandler(fh)
-    logger.addHandler(ch)
+    logger.addHandler(ch) 
     
     return logger
 
@@ -165,14 +165,32 @@ class StylometryPipeline:
                 embedding = self.process_chunk(chunk)
                 chunk_embeddings.append(embedding)
 
+            job_id = f"job_{filepath.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Create directory for chunk embeddings
+            chunk_dir = self.results_dir / job_id / 'chunks'
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Process chunks and save individually
+            chunk_embeddings = []
+            for i, chunk in enumerate(tqdm(chunks, desc="Processing chunks")):
+                embedding = self.process_chunk(chunk)
+                chunk_embeddings.append(embedding)
+                
+                # Save individual chunk embedding
+                chunk_result = {
+                    'chunk_text': chunk,
+                    'embedding': embedding.tolist(),
+                    'chunk_index': i
+                }
+                with open(chunk_dir / f'chunk_{i}.json', 'w') as f:
+                    json.dump(chunk_result, f, indent=2)
+
             # Average embeddings
             if not chunk_embeddings:
                 raise ValueError("No valid chunks processed")
                 
             final_embedding = np.mean(chunk_embeddings, axis=0)
-            
-            # Create job ID and metadata
-            job_id = f"job_{filepath.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
             # Save results
             result = {

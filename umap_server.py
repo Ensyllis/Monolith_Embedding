@@ -49,7 +49,7 @@ def create_visualization(embeddings: np.ndarray, ids: List[str], output_dir: str
     
     return embedding_2d
 
-@app.route('/generate_umap', methods=['POST'])
+@app.route('/generate_umap', methods=['GET', 'POST'])
 def generate_umap():
     logger = setup_logging()
     try:
